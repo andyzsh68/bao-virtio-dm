@@ -149,7 +149,7 @@ fn count(value: u32) -> Result<usize> {
     Ok(value as usize)
 }
 
-fn display(file: &File) -> Result<(u32, u32, Mode, Vec<u32>)> {
+fn display(file: &File, width: u32, height: u32) -> Result<(u32, u32, Mode, Vec<u32>)> {
     let mut resources = Resources::default();
     ioctl(file, 0xa0, &mut resources)?;
     let mut connectors = vec![0u32; count(resources.connector_count)?];
@@ -198,7 +198,7 @@ fn display(file: &File) -> Result<(u32, u32, Mode, Vec<u32>)> {
         }
         let Some(mode) = modes[..connector.mode_count as usize]
             .iter()
-            .find(|mode| mode.horizontal[0] as u32 == WIDTH && mode.vertical[0] as u32 == HEIGHT)
+            .find(|mode| mode.horizontal[0] as u32 == width && mode.vertical[0] as u32 == height)
         else {
             continue;
         };
@@ -219,8 +219,8 @@ fn display(file: &File) -> Result<(u32, u32, Mode, Vec<u32>)> {
             }
         }
     }
-    let (connector, crtc, mode) = selected
-        .ok_or_else(|| invalid("No connected DRM output with a compatible 640x480 mode/CRTC"))?;
+    let (connector, crtc, mode) =
+        selected.ok_or_else(|| invalid("No connected DRM output with the requested mode/CRTC"))?;
     let restore = current
         .into_iter()
         .filter(|(_, assigned)| *assigned == crtc)
@@ -229,18 +229,18 @@ fn display(file: &File) -> Result<(u32, u32, Mode, Vec<u32>)> {
     Ok((connector, crtc, mode, restore))
 }
 
-fn copy_rgb(frame: &[u8], mapping: &mut [u8], pitch: usize) -> Result<()> {
-    if frame.len() != WIDTH as usize * HEIGHT as usize * 3
-        || pitch < WIDTH as usize * 4
+fn copy_rgb(frame: &[u8], mapping: &mut [u8], pitch: usize, width: u32, height: u32) -> Result<()> {
+    if frame.len() != width as usize * height as usize * 3
+        || pitch < width as usize * 4
         || pitch
-            .checked_mul(HEIGHT as usize)
+            .checked_mul(height as usize)
             .is_none_or(|size| size > mapping.len())
     {
         return Err(invalid("Invalid RGB frame or DRM buffer layout"));
     }
-    for row in 0..HEIGHT as usize {
-        let source = &frame[row * WIDTH as usize * 3..][..WIDTH as usize * 3];
-        let target = &mut mapping[row * pitch..][..WIDTH as usize * 4];
+    for row in 0..height as usize {
+        let source = &frame[row * width as usize * 3..][..width as usize * 3];
+        let target = &mut mapping[row * pitch..][..width as usize * 4];
         for (rgb, pixel) in source.chunks_exact(3).zip(target.chunks_exact_mut(4)) {
             pixel.copy_from_slice(&[rgb[2], rgb[1], rgb[0], 0]);
         }
@@ -261,11 +261,18 @@ pub struct Kms {
 
 impl Kms {
     pub fn open(path: &str) -> Result<Self> {
+        Self::open_mode(path, WIDTH, HEIGHT)
+    }
+
+    pub fn open_mode(path: &str, width: u32, height: u32) -> Result<Self> {
+        if width == 0 || height == 0 || width > 4096 || height > 4096 {
+            return Err(invalid("DRM mode outside lab limits"));
+        }
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         if unsafe { libc::ioctl(file.as_raw_fd(), 0x641e, 0) } < 0 {
             return Err(Error::last_os_error());
         }
-        let (connector, crtc, mode, restore_connectors) = display(&file)?;
+        let (connector, crtc, mode, restore_connectors) = display(&file, width, height)?;
         let mut original = Crtc {
             id: crtc,
             ..Default::default()
@@ -274,8 +281,8 @@ impl Kms {
         let mut kms = Self {
             file,
             buffer: DumbBuffer {
-                width: WIDTH,
-                height: HEIGHT,
+                width,
+                height,
                 bpp: 32,
                 ..Default::default()
             },
@@ -290,14 +297,14 @@ impl Kms {
         kms.length =
             usize::try_from(kms.buffer.size).map_err(|_| invalid("DRM buffer too large"))?;
         if kms.length > 128 * 1024 * 1024
-            || kms.buffer.pitch < WIDTH * 4
-            || kms.length < kms.buffer.pitch as usize * HEIGHT as usize
+            || kms.buffer.pitch < width * 4
+            || kms.length < kms.buffer.pitch as usize * height as usize
         {
             return Err(invalid("Invalid DRM dumb buffer layout"));
         }
         kms.framebuffer = Framebuffer {
-            width: WIDTH,
-            height: HEIGHT,
+            width,
+            height,
             pitch: kms.buffer.pitch,
             bpp: 32,
             depth: 24,
@@ -340,7 +347,7 @@ impl Kms {
         kms.modeset = true;
         println!(
             "GPU_KMS_READY device={} connector={} crtc={} framebuffer={} mode={}x{} pitch={}",
-            path, connector, crtc, kms.framebuffer.id, WIDTH, HEIGHT, kms.buffer.pitch
+            path, connector, crtc, kms.framebuffer.id, width, height, kms.buffer.pitch
         );
         Ok(kms)
     }
@@ -348,8 +355,14 @@ impl Kms {
     pub fn present(&mut self, frame: &[u8], generation: u64) -> Result<()> {
         let mapping =
             unsafe { std::slice::from_raw_parts_mut(self.address as *mut u8, self.length) };
-        copy_rgb(frame, mapping, self.buffer.pitch as usize)?;
-        let rectangle = [0u16, 0, WIDTH as u16, HEIGHT as u16];
+        copy_rgb(
+            frame,
+            mapping,
+            self.buffer.pitch as usize,
+            self.buffer.width,
+            self.buffer.height,
+        )?;
+        let rectangle = [0u16, 0, self.buffer.width as u16, self.buffer.height as u16];
         let mut dirty = Dirty {
             framebuffer: self.framebuffer.id,
             count: 1,
@@ -411,7 +424,7 @@ mod tests {
         let mut frame = vec![0; WIDTH as usize * HEIGHT as usize * 3];
         frame[..6].copy_from_slice(&[255, 128, 64, 0, 100, 200]);
         let mut mapping = vec![0xa5; pitch * HEIGHT as usize];
-        copy_rgb(&frame, &mut mapping, pitch).unwrap();
+        copy_rgb(&frame, &mut mapping, pitch, WIDTH, HEIGHT).unwrap();
         assert_eq!(&mapping[..8], &[64, 128, 255, 0, 200, 100, 0, 0]);
         assert_eq!(&mapping[WIDTH as usize * 4..pitch], &[0xa5; 16]);
         assert_eq!(&mapping[pitch..pitch + 4], &[0, 0, 0, 0]);
@@ -421,10 +434,39 @@ mod tests {
     fn invalid_frame_and_buffer_layouts_are_rejected() {
         let frame = vec![0; WIDTH as usize * HEIGHT as usize * 3];
         let mut mapping = vec![0; WIDTH as usize * HEIGHT as usize * 4];
-        assert!(copy_rgb(&frame[..frame.len() - 1], &mut mapping, WIDTH as usize * 4).is_err());
-        assert!(copy_rgb(&frame, &mut mapping, WIDTH as usize * 4 - 1).is_err());
-        assert!(copy_rgb(&frame, &mut mapping[..10], WIDTH as usize * 4).is_err());
-        assert!(copy_rgb(&frame, &mut mapping, usize::MAX).is_err());
+        assert!(copy_rgb(
+            &frame[..frame.len() - 1],
+            &mut mapping,
+            WIDTH as usize * 4,
+            WIDTH,
+            HEIGHT
+        )
+        .is_err());
+        assert!(copy_rgb(&frame, &mut mapping, WIDTH as usize * 4 - 1, WIDTH, HEIGHT).is_err());
+        assert!(copy_rgb(
+            &frame,
+            &mut mapping[..10],
+            WIDTH as usize * 4,
+            WIDTH,
+            HEIGHT
+        )
+        .is_err());
+        assert!(copy_rgb(&frame, &mut mapping, usize::MAX, WIDTH, HEIGHT).is_err());
         assert!(Kms::open("/nonexistent/bao-gpu-kms-test").is_err());
+    }
+
+    #[test]
+    fn shared_display_mode_converts_full_width_with_padding() {
+        let width = WIDTH * 2;
+        let pitch = width as usize * 4 + 16;
+        let mut frame = vec![0; width as usize * HEIGHT as usize * 3];
+        let right = WIDTH as usize * 3;
+        frame[right..right + 3].copy_from_slice(&[21, 43, 65]);
+        let mut mapping = vec![0xa5; pitch * HEIGHT as usize];
+        copy_rgb(&frame, &mut mapping, pitch, width, HEIGHT).unwrap();
+        assert_eq!(&mapping[WIDTH as usize * 4..][..4], &[65, 43, 21, 0]);
+        assert_eq!(&mapping[width as usize * 4..pitch], &[0xa5; 16]);
+        assert!(Kms::open_mode("/nonexistent", 0, HEIGHT).is_err());
+        assert!(Kms::open_mode("/nonexistent", 4097, HEIGHT).is_err());
     }
 }

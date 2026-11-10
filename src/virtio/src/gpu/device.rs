@@ -1,4 +1,5 @@
 use super::core::{Gpu, Memory, HEIGHT, MAX_REQUEST, WIDTH};
+use super::display::{Client, Presenter};
 use super::kms::Kms;
 use crate::device::{
     clone_queue, SignalUsedQueue, SingleFdSignalQueue, Subscriber, VirtioDeviceCommon,
@@ -42,7 +43,7 @@ struct Handler {
     notify: SingleFdSignalQueue,
     gpu: Gpu,
     output: String,
-    kms: Arc<Mutex<Option<Kms>>>,
+    kms: Arc<Mutex<Option<Presenter>>>,
 }
 
 impl Handler {
@@ -195,7 +196,7 @@ pub struct VirtioGpu {
     memory: Option<GuestMemoryMmap>,
     handler: Option<(SubscriberId, Arc<Mutex<Handler>>)>,
     output: String,
-    kms: Arc<Mutex<Option<Kms>>>,
+    kms: Arc<Mutex<Option<Presenter>>>,
 }
 
 impl VirtioDeviceT for VirtioGpu {
@@ -212,11 +213,17 @@ impl VirtioDeviceT for VirtioGpu {
             VirtioConfig::new(features, queues, Self::config_space(config)?),
         )?;
         let display = std::env::var("BAO_GPU_KMS").unwrap_or_else(|_| "/dev/dri/card0".into());
-        let kms = if display == "off" {
+        let kms = if let Ok(path) = std::env::var("BAO_GPU_COMPOSITOR") {
+            Some(Presenter::Shared(
+                Client::connect(std::path::Path::new(&path)).map_err(Error::EventFdWriteFailed)?,
+            ))
+        } else if display == "off" {
             eprintln!("GPU_KMS_DISABLED explicit software-only debug mode");
             None
         } else {
-            Some(Kms::open(&display).map_err(Error::EventFdWriteFailed)?)
+            Some(Presenter::Direct(
+                Kms::open(&display).map_err(Error::EventFdWriteFailed)?,
+            ))
         };
         let gpu = Arc::new(Mutex::new(Self {
             common,
