@@ -5,6 +5,7 @@ use api::types::DeviceConfig;
 use event_manager::{EventManager, MutEventSubscriber};
 use std::sync::{Arc, Mutex};
 use virtio::block::virtio::device::VirtioBlock;
+use virtio::gpu::device::VirtioGpu;
 use virtio::console::virtio::device::VirtioConsole;
 use virtio::device::VirtioDeviceT;
 use virtio::device::{VirtioDataPlane, VirtioDevType, VirtioDeviceType};
@@ -157,7 +158,15 @@ impl Vm {
                     VirtioDataPlane::to_string(&data_plane),
                 )),
             },
-            // Other device types.
+            VirtioDevType::Gpu => match data_plane {
+                VirtioDataPlane::Virtio => Ok(VirtioDeviceType::VirtioGpu(
+                    VirtioGpu::new(config, device_manager, event_manager, device_model)?,
+                )),
+                _ => Err(Error::WrongDeviceConfiguration(
+                    VirtioDevType::to_string(&device_type),
+                    VirtioDataPlane::to_string(&data_plane),
+                )),
+            },
             _ => Err(Error::WrongDeviceConfiguration(
                 VirtioDevType::to_string(&device_type),
                 VirtioDataPlane::to_string(&data_plane),

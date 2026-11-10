@@ -1,4 +1,5 @@
 use super::block::virtio::device::VirtioBlock;
+use super::gpu::device::VirtioGpu;
 use super::console::virtio::device::VirtioConsole;
 use super::fs::vhost_user::device::VhostUserFs;
 use super::mmio::MmioConfig;
@@ -36,6 +37,7 @@ pub type Subscriber = Arc<Mutex<dyn MutEventSubscriber + Send>>;
 #[allow(clippy::large_enum_variant)]
 /// Virtio device type abstraction to pack all possible devices into one enum.
 pub enum VirtioDeviceType {
+    VirtioGpu(Arc<Mutex<VirtioGpu>>),
     VirtioBlock(Arc<Mutex<VirtioBlock>>),
     VhostUserFs(Arc<Mutex<VhostUserFs>>),
     VhostVsock(Arc<Mutex<VhostVsockDevice>>),
@@ -481,7 +483,7 @@ impl VirtioDevType {
             VirtioDevType::Console => (2, 1024),
             VirtioDevType::Rng => (1, 1024),
             VirtioDevType::Balloon => (0, 0),
-            VirtioDevType::Gpu => (0, 0),
+            VirtioDevType::Gpu => (2, 256),
             VirtioDevType::Fs9P => (0, 0),
             VirtioDevType::Input => (0, 0),
             VirtioDevType::Vsock => (3, 1024), // Virtio spec says 3 queues, but vhost/vhost-user only manage 2 (RX/TX)
