@@ -13,6 +13,9 @@ const UNSPEC: u32 = 0x1200;
 pub trait Memory {
     fn contains(&self, address: u64, length: usize) -> bool;
     fn read(&self, address: u64, data: &mut [u8]) -> bool;
+    fn write(&self, _address: u64, _data: &[u8]) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -94,6 +97,7 @@ impl Resource {
 
 #[derive(Default)]
 pub struct Gpu {
+    renderer: Option<super::virgl::Gpu3d>,
     resources: BTreeMap<u32, Resource>,
     scanout: Option<(u32, Rect)>,
     cursor: Option<Vec<u8>>,
@@ -117,6 +121,10 @@ fn put(data: &mut [u8], offset: usize, value: u32) {
 }
 
 impl Gpu {
+    pub fn virgl(path: &str) -> std::io::Result<Self> {
+        Ok(Self { renderer: Some(super::virgl::Gpu3d::connect(path)?), ..Self::default() })
+    }
+
     pub fn reset(&mut self) {
         let generation = self.generation.wrapping_add(1);
         *self = Self::default();
@@ -124,6 +132,11 @@ impl Gpu {
     }
 
     pub fn execute(&mut self, data: &[u8], cursor_queue: bool, memory: &impl Memory) -> Vec<u8> {
+        if let Some(renderer) = self.renderer.as_mut() {
+            let response = renderer.execute(data, cursor_queue, memory);
+            self.generation = renderer.generation;
+            return response;
+        }
         let result = if data.len() < 24 || data.len() > MAX_REQUEST {
             Err(INVALID)
         } else if word(data, 4).unwrap() & !1 != 0 {
@@ -357,6 +370,9 @@ impl Gpu {
     }
 
     pub fn frame_rgb(&self) -> Vec<u8> {
+        if let Some(renderer) = &self.renderer {
+            return renderer.frame_rgb();
+        }
         let mut frame = vec![0u8; WIDTH as usize * HEIGHT as usize * 3];
         if let Some((id, rect)) = self.scanout {
             if let Some(resource) = self.resources.get(&id) {

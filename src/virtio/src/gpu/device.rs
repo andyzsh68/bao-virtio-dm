@@ -34,6 +34,9 @@ impl Memory for GuestMemoryMmap {
     fn read(&self, address: u64, data: &mut [u8]) -> bool {
         self.read_slice(data, GuestAddress(address)).is_ok()
     }
+    fn write(&self, address: u64, data: &[u8]) -> bool {
+        self.write_slice(data, GuestAddress(address)).is_ok()
+    }
 }
 
 struct Handler {
@@ -207,6 +210,10 @@ impl VirtioDeviceT for VirtioGpu {
         device_model: Arc<Mutex<BaoDeviceModel>>,
     ) -> Result<Arc<Mutex<Self>>> {
         let (features, queues) = Self::initialize(config)?;
+        let features = features | Self::device_features(config)?;
+        if let Ok(path) = std::env::var("BAO_GPU_VIRGL") {
+            Gpu::virgl(&path).map_err(Error::EventFdWriteFailed)?;
+        }
         let common = VirtioDeviceCommon::new(
             config,
             device_model,
@@ -245,11 +252,14 @@ impl VirtioDeviceT for VirtioGpu {
         Ok(gpu)
     }
     fn device_features(_config: &DeviceConfig) -> Result<u64> {
-        Ok(0)
+        Ok(u64::from(std::env::var_os("BAO_GPU_VIRGL").is_some()))
     }
     fn config_space(_config: &DeviceConfig) -> Result<Vec<u8>> {
         let mut config = vec![0; 16];
         config[8..12].copy_from_slice(&1u32.to_le_bytes());
+        if std::env::var_os("BAO_GPU_VIRGL").is_some() {
+            config[12..16].copy_from_slice(&2u32.to_le_bytes());
+        }
         Ok(config)
     }
 }
@@ -298,7 +308,12 @@ impl VirtioDeviceActions for VirtioGpu {
                     .map_err(Error::EventFdWriteFailed)?,
                 interrupt_status: self.common.config.interrupt_status.clone(),
             },
-            gpu: Gpu::default(),
+            gpu: if self.common.config.driver_features & 1 != 0 {
+                Gpu::virgl(&std::env::var("BAO_GPU_VIRGL").map_err(|_| Error::BaoBusInvalidState)?)
+                    .map_err(Error::EventFdWriteFailed)?
+            } else {
+                Gpu::default()
+            },
             output: self.output.clone(),
             kms: self.kms.clone(),
         }));
@@ -343,10 +358,15 @@ impl VirtioDeviceActions for VirtioGpu {
             .config
             .interrupt_status
             .store(0, Ordering::SeqCst);
+        let mut config_space = vec![0; 16];
+        config_space[8..12].copy_from_slice(&1u32.to_le_bytes());
+        if features & 1 != 0 {
+            config_space[12..16].copy_from_slice(&2u32.to_le_bytes());
+        }
         self.common.config = VirtioConfig::new(
             features,
             vec![Queue::new(256).unwrap(), Queue::new(256).unwrap()],
-            vec![0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            config_space,
         );
         println!("GPU_RESET");
         Ok(())
