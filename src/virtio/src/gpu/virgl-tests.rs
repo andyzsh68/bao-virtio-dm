@@ -298,7 +298,7 @@ fn invalid_guest_backing_and_resource_budgets_are_rejected() {
                 &mut gpu,
                 0x204,
                 0,
-                &[2, 2, 2, 2, 4096, 4096, 1, 1, 0, 0, 0, 0],
+                &[2, 2, 2, 2, 8192, 4096, 1, 1, 0, 0, 0, 0],
                 &ram
             ),
             0
@@ -307,6 +307,151 @@ fn invalid_guest_backing_and_resource_budgets_are_rejected() {
     );
     assert_eq!(word(&run(&mut gpu, 0x102, 0, &[1, 0], &ram), 0), Ok(0x1100));
     assert_eq!(gpu.allocated, 0);
+}
+
+#[test]
+fn byte_buffers_and_desktop_scanouts_use_the_existing_budget() {
+    let (mut gpu, _) = gpu(None);
+    let ram = Ram(RefCell::new(Vec::new()));
+    for identifier in 1..=8 {
+        assert_eq!(
+            word(
+                &run(
+                    &mut gpu,
+                    0x204,
+                    0,
+                    &[identifier, 0, 64, 16, 4 * 1024 * 1024, 1, 1, 1, 0, 0, 0, 0],
+                    &ram
+                ),
+                0
+            ),
+            Ok(0x1100)
+        );
+    }
+    for identifier in 9..=16 {
+        assert_eq!(
+            word(
+                &run(
+                    &mut gpu,
+                    0x204,
+                    0,
+                    &[identifier, 2, 2, 2, 640, 480, 1, 1, 0, 0, 0, 0],
+                    &ram
+                ),
+                0
+            ),
+            Ok(0x1100)
+        );
+    }
+    assert_eq!(gpu.allocated, 32 * 1024 * 1024 + 8 * 640 * 480 * 4);
+    assert!(gpu.allocated <= LIMIT);
+    for identifier in 1..=16 {
+        assert_eq!(
+            word(&run(&mut gpu, 0x102, 0, &[identifier, 0], &ram), 0),
+            Ok(0x1100)
+        );
+    }
+    assert_eq!(gpu.allocated, 0);
+}
+
+#[test]
+fn unknown_formats_keep_a_conservative_256_bit_texel_budget() {
+    let ram = Ram(RefCell::new(Vec::new()));
+    for (format, element_bytes) in [(1, 4), (19, 4), (67, 4), (27, 32), (31, 32), (u32::MAX, 32)] {
+        let (mut gpu, _) = gpu(None);
+        assert_eq!(
+            word(
+                &run(
+                    &mut gpu,
+                    0x204,
+                    0,
+                    &[1, 2, format, 2, 16, 8, 1, 1, 2, 4, 0, 0],
+                    &ram
+                ),
+                0
+            ),
+            Ok(0x1100)
+        );
+        assert_eq!(gpu.allocated, 16 * 8 * element_bytes * 2 * 4);
+    }
+}
+
+#[test]
+fn byte_buffer_dimensions_cannot_bypass_resource_accounting() {
+    let ram = Ram(RefCell::new(Vec::new()));
+    for (height, depth, layers, level, samples) in [
+        (2, 1, 1, 0, 0),
+        (1, 2, 1, 0, 0),
+        (1, 1, 2, 0, 0),
+        (1, 1, 1, 1, 0),
+        (1, 1, 1, 0, 2),
+    ] {
+        let (mut gpu, calls) = gpu(None);
+        assert_eq!(
+            word(
+                &run(
+                    &mut gpu,
+                    0x204,
+                    0,
+                    &[1, 0, 64, 16, 1024, height, depth, layers, level, samples, 0, 0],
+                    &ram
+                ),
+                0
+            ),
+            Ok(INVALID)
+        );
+        assert_eq!(gpu.allocated, 0);
+        assert!(calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn exact_byte_budget_limit_is_reclaimed_without_expansion() {
+    let (mut gpu, _) = gpu(None);
+    let ram = Ram(RefCell::new(Vec::new()));
+    assert_eq!(
+        word(
+            &run(
+                &mut gpu,
+                0x204,
+                0,
+                &[1, 0, 64, 16, LIMIT as u32, 1, 1, 1, 0, 0, 0, 0],
+                &ram
+            ),
+            0
+        ),
+        Ok(0x1100)
+    );
+    assert_eq!(gpu.allocated, LIMIT);
+    assert_eq!(
+        word(
+            &run(
+                &mut gpu,
+                0x204,
+                0,
+                &[2, 0, 64, 16, 1, 1, 1, 1, 0, 0, 0, 0],
+                &ram
+            ),
+            0
+        ),
+        Ok(OOM)
+    );
+    assert_eq!(word(&run(&mut gpu, 0x102, 0, &[1, 0], &ram), 0), Ok(0x1100));
+    assert_eq!(gpu.allocated, 0);
+    assert_eq!(
+        word(
+            &run(
+                &mut gpu,
+                0x204,
+                0,
+                &[2, 0, 64, 16, 1, 1, 1, 1, 0, 0, 0, 0],
+                &ram
+            ),
+            0
+        ),
+        Ok(0x1100)
+    );
+    assert_eq!(gpu.allocated, 1);
 }
 
 #[test]

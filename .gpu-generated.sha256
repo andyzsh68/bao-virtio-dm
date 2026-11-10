@@ -4,6 +4,6 @@ f2800d131ce4c66c7373206e1c14b59da7bd5e393516673ee9a66462feb8378b  src/virtio/src
 f1c64931a18aba0842d7a632f1c9b6bd917338b67f455f89d32c1a96fbb7c298  src/virtio/src/gpu/device.rs
 5c9f4dd98bb8e5d77d4d8a97bbb2729cb5c696dc9e424416ab5c979c6590b365  src/virtio/src/gpu/kms.rs
 11175badabb461f43118b3f760d2de5038920e87e58df241a4a9e7ac9f960001  src/virtio/src/gpu/display.rs
-20f62e84cc6754b94660fb399fa039f849a7010d181f93d2bc01dc2c96ab3544  src/virtio/src/gpu/virgl.rs
-53cad7eb628f0c219b4357e9f01a1878f74a22148b699cc75d867321cc71cc6b  src/virtio/src/gpu/virgl-tests.rs
+99395dda355cfe6823e8e947b7f1d8624120d8fe8b2b64fac0c6fc0b101bfa14  src/virtio/src/gpu/virgl.rs
+882b26e91611abdf42a1968ecf850e0579722ef03798d319b14ef877aae29a36  src/virtio/src/gpu/virgl-tests.rs
 c3e5525ae4c6b13482da46adbf1c2bac17a7468d6cb88a892d01595f1cb1fc4a  src/bin/bao-gpu-display.rs

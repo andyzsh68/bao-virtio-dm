@@ -477,6 +477,8 @@ impl Gpu3d {
         let layers = word(data, 28)?;
         let level = word(data, 32)?;
         let samples = word(data, 36)?;
+        let target = word(data, 4)?;
+        let format = word(data, 8)?;
         if width == 0
             || height == 0
             || depth == 0
@@ -487,20 +489,32 @@ impl Gpu3d {
             || layers > 2048
             || level > 12
             || samples > 16
-            || word(data, 4)? > 9
+            || target > 9
             || word(data, 40)? & !1 != 0
+            || (target == 0
+                && (height != 1 || depth != 1 || layers != 1 || level != 0 || samples > 1))
         {
             return Err(INVALID);
         }
+        let element_bytes = if target == 0 {
+            1
+        } else if valid_format(format)
+            || [8, 17, 18, 19, 20, 21, 22, 28, 32, 36, 40, 44, 87].contains(&format)
+        {
+            4
+        } else {
+            32
+        };
         let budget = (width as usize)
             .checked_mul(height as usize)
             .and_then(|size| size.checked_mul(depth as usize))
             .and_then(|size| size.checked_mul(layers as usize))
-            .and_then(|size| size.checked_mul(16))
+            .and_then(|size| size.checked_mul(element_bytes))
             .and_then(|size| size.checked_mul(samples.max(1) as usize))
             .and_then(|size| size.checked_mul(if level == 0 { 1 } else { 2 }))
             .ok_or(OOM)?;
         if self.resources.len() >= 256 || budget > LIMIT - self.allocated {
+            eprintln!("VIRGL_RESOURCE_BUDGET id={id} target={target} format={format} requested={budget} allocated={} limit={LIMIT}", self.allocated);
             return Err(OOM);
         }
         self.renderer.call(1, data)?;
@@ -511,14 +525,18 @@ impl Gpu3d {
                 height,
                 depth,
                 layers,
-                target: word(data, 4)?,
-                format: word(data, 8)?,
+                target,
+                format,
                 level,
                 budget,
                 backing: Vec::new(),
             },
         );
         self.allocated += budget;
+        println!(
+            "VIRGL_RESOURCE id={id} target={target} format={format} budget={budget} allocated={}",
+            self.allocated
+        );
         Ok(())
     }
 
